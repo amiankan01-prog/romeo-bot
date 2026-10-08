@@ -151,6 +151,10 @@ const JUNK = [
  */
 function closeness(a, b) {
   if (a === b) return 1
+  // 🔊 ধ্বনিতে এক হলে এক ধরি — "shey"≈"se", "bhalo"≈"valo", "khusi"≈"khushi"
+  //    (এটা ছাড়া ছোট শব্দ মিলতোই না, আর আসল গান কভারের কাছে হেরে যেতো)
+  const pa = phon(a), pb = phon(b)
+  if (pa && pa === pb) return 1
   if (a.length < 3 || b.length < 3) return 0
   if (a.startsWith(b) || b.startsWith(a)) return 0.9
   // Levenshtein দূরত্ব
@@ -179,6 +183,42 @@ function closeness(a, b) {
  * @param {object} item      { title, artist }
  * @returns {number}         নম্বর (বেশি = ভালো মিল)
  */
+/**
+ * 🔊 ধ্বনি-রূপ (phonetic key) — বাংলা রোমানায়নের বানান-ভেদ মেলাতে।
+ *
+ * আসল সমস্যা ছিল: "Bojhena *Shey* Bojhena" (Zubeen, ২০০৯ — আসল গান) আর
+ * "Bojhena *Se* Bojhena" (২০২৩ — কভার) — ব্যবহারকারী "se" লিখলে আসলটা
+ * হেরে যেতো, কারণ "shey" ≠ "se"। এখন দুটোরই ধ্বনি-রূপ "se" → সমান।
+ */
+export function phon(word) {
+  let w = String(word || '').toLowerCase()
+  if (!w) return ''
+  w = w
+    .replace(/[^a-z0-9]/g, '')
+    .replace(/ph/g, 'f').replace(/sh/g, 's').replace(/chh/g, 'c').replace(/ch/g, 'c')
+    .replace(/z/g, 'j').replace(/v/g, 'b').replace(/x/g, 'ks')
+    .replace(/ee/g, 'i').replace(/oo/g, 'u').replace(/aa/g, 'a')
+    .replace(/au/g, 'o').replace(/ou/g, 'o').replace(/ai/g, 'oi')
+    .replace(/(.)\1+/g, '$1')      // দ্বিত্ব অক্ষর এক করা
+    .replace(/[yh]+$/, '')          // শেষের y/h ফেলে দাও: "shey"→"se", "noy"→"no"
+  return w
+}
+
+/** গোটা নামের ধ্বনি-রূপ — শব্দভাগ আলাদা হলেও মিলবে */
+const phonKey = s => tokens(s).map(phon).join('')
+
+/**
+ * 🎬 অ্যালবামের নাম কি সিনেমার সাউন্ডট্র্যাক? → আসল গান হওয়ার জোরালো ইঙ্গিত।
+ * কভার/রি-রেকর্ডিং প্রায় কখনোই "Original Motion Picture Soundtrack" হয় না।
+ */
+const SOUNDTRACK = /original motion picture|motion picture soundtrack|\bost\b|original soundtrack/i
+
+/**
+ * 🎯 একটা ফলাফল কতটা মেলে — ০ থেকে ১০০।
+ *
+ * @param {string} query   ব্যবহারকারী যা চেয়েছে
+ * @param {object} item    { title, artist, album, year, idx }
+ */
 export function scoreMatch(query, item) {
   const qRaw = hasBengali(query) ? romanize(query) : query
   const q = tokens(qRaw)
@@ -196,8 +236,7 @@ export function scoreMatch(query, item) {
     const best = Math.max(0, ...pool.map(pw => closeness(qw, pw)))
     hit += best
   }
-  const coverage = hit / q.length          // ০–১
-  score += coverage * 55
+  score += (hit / q.length) * 55
 
   // ── ২. চাওয়া সব শব্দই টাইটেলে থাকলে বড় বোনাস ──
   const inTitle = q.filter(qw => t.some(tw => closeness(qw, tw) >= 0.9)).length
@@ -206,6 +245,12 @@ export function scoreMatch(query, item) {
   // ── ৩. হুবহু এক নাম হলে সর্বোচ্চ বোনাস ──
   if (norm(qRaw) === norm(item.title)) score += 15
 
+  // ── ৩খ. ধ্বনিতে হুবহু এক হলেও পুরো বোনাস ──
+  //    বানান আলাদা হলেও ("Shey" বনাম "Se") যেন আসল গানটা পিছিয়ে না পড়ে।
+  const qKey = phonKey(qRaw)
+  if (qKey && qKey === phonKey(item.title)) score += 32
+  else if (qKey && phonKey(item.title).includes(qKey) && qKey.length >= 6) score += 14
+
   // ── ৪. টাইটেলে অনেক বাড়তি শব্দ = সম্ভবত অন্য গান ──
   const extra = Math.max(0, t.length - inTitle)
   score -= Math.min(12, extra * 3)
@@ -213,12 +258,12 @@ export function scoreMatch(query, item) {
   // ── ৫. কভার / কারাওকে / রিমিক্স — ব্যবহারকারী না চাইলে শাস্তি ──
   // ⚠️ norm() বন্ধনীর ভেতরের লেখা ফেলে দেয় — কিন্তু "(Karaoke)",
   //    "(Cover)" তো ওখানেই লেখা থাকে! তাই এখানে কাঁচা লেখাটাই দেখি।
-  const raw = t => unescapeHtml(t).toLowerCase().replace(/[^a-z0-9\s]+/g, ' ')
-  const titleLow = raw(item.title) + ' ' + raw(item.artist)
+  const raw = x => unescapeHtml(x || '').toLowerCase().replace(/[^a-z0-9\s]+/g, ' ')
+  const titleLow = raw(item.title) + ' ' + raw(item.artist) + ' ' + raw(item.album)
   const qLow = raw(qRaw)
-  for (const j of JUNK) {
-    if (titleLow.includes(j) && !qLow.includes(j)) { score -= 18; break }
-  }
+  let junkHits = 0
+  for (const j of JUNK) if (titleLow.includes(j) && !qLow.includes(j)) junkHits++
+  score -= Math.min(36, junkHits * 18)
 
   // ── ৬. শিল্পীর নাম চাওয়ায় থাকলে বোনাস ──
   if (a.length) {
@@ -226,11 +271,21 @@ export function scoreMatch(query, item) {
     if (artistHit) score += 12
   }
 
-  return Math.max(0, Math.min(100, Math.round(score)))
+  // ── ৭. 🎬 সিনেমার সাউন্ডট্র্যাক = আসল গান হওয়ার ইঙ্গিত ──
+  if (SOUNDTRACK.test(item.album || '')) score += 10
+
+  // ── ৮. 📊 সোর্সের নিজের র‍্যাঙ্ক — JioSaavn/YouTube জনপ্রিয়তা বোঝে ──
+  //    আগে এটা একেবারে উপেক্ষা করা হতো, তাই অখ্যাত কভার উপরে উঠে যেতো।
+  if (Number.isFinite(item.idx)) score += Math.max(0, 9 - item.idx * 1.5)
+
+  return Math.max(0, Math.min(130, Math.round(score)))
 }
 
 /**
  * তালিকা থেকে সবচেয়ে ভালো মিলটা বেছে নেয়।
+ *
+ * ⚖️ সমান-সমান হলে (১০ নম্বরের মধ্যে) **সবচেয়ে পুরোনোটা** জেতে —
+ *    কারণ একই নামের গানে আসলটাই আগে বেরোয়, কভার পরে আসে।
  *
  * @param {number} min  এর নিচে নম্বর হলে "পেলাম না" ধরে নেবো
  * @returns {{item, score, ranked}|null}
@@ -238,10 +293,68 @@ export function scoreMatch(query, item) {
 export function bestMatch(query, items, min = 45) {
   if (!Array.isArray(items) || !items.length) return null
   const ranked = items
-    .map(item => ({ item, score: scoreMatch(query, item) }))
+    .map((item, idx) => ({
+      item,
+      score: scoreMatch(query, Number.isFinite(item.idx) ? item : { ...item, idx })
+    }))
     .sort((x, y) => y.score - x.score)
+
   const top = ranked[0]
-  return top && top.score >= min ? { ...top, ranked } : null
+  if (!top || top.score < min) return null
+
+  // কাছাকাছি নম্বরের মধ্যে সবচেয়ে পুরোনো প্রকাশ = আসল গান
+  const close = ranked.filter(r => top.score - r.score <= 10)
+  let pick = top
+  if (close.length > 1) {
+    const dated = close.filter(r => Number(r.item.year) > 1900)
+    if (dated.length) {
+      pick = dated.reduce((best, r) =>
+        Number(r.item.year) < Number(best.item.year) ? r : best
+      )
+    }
+  }
+  return { ...pick, ranked }
+}
+
+/**
+ * 🕵️ নকল-শনাক্তকারী — "এটা কি আসল গান, নাকি কারও তুলে দেওয়া কপি?"
+ *
+ * আসল সমস্যা: JioSaavn-এ অনেক বিদেশি/জনপ্রিয় গানের **আসলটা থাকেই না**
+ * (লাইসেন্স নেই), অথচ অখ্যাত শিল্পীদের হুবহু-নামের কপি ভর্তি থাকে।
+ * যেমন "shape of you" খুঁজলে Ed Sheeran নেই, বদলে Nxsser / Boostereo /
+ * LexMorris — সবাই একই নামে, সবারই অ্যালবামের নাম গানের নামেই।
+ *
+ * সেই ফাঁদটা চিনলে Romeo JioSaavn ছেড়ে YouTube-এ গিয়ে আসলটা আনবে।
+ *
+ * @returns {boolean} true = সন্দেহজনক, অন্য সোর্সে খোঁজা উচিত
+ */
+export function knockoffRisk(query, pick, items = []) {
+  if (!pick) return false
+
+  // সিনেমার সাউন্ডট্র্যাক = আসল, সন্দেহ নেই
+  if (SOUNDTRACK.test(pick.album || '')) return false
+
+  // ব্যবহারকারী নিজেই শিল্পীর নাম লিখেছে আর সেটা মিলেছে → যা চেয়েছে তাই পেয়েছে
+  const q = tokens(hasBengali(query) ? romanize(query) : query)
+  const a = tokens(pick.artist || '')
+  if (a.length && a.some(aw => q.some(qw => closeness(qw, aw) >= 0.9))) return false
+
+  // একই নামে অনেক *আলাদা* শিল্পীর রেকর্ড = কপির বাজার
+  // (সিনেমার গান উপরেই ছাড় পেয়ে গেছে, তাই এখানে ভুল সন্দেহ হলেও
+  //  ক্ষতি নেই — Romeo শুধু YouTube-এও একবার দেখে নেবে, তারপর
+  //  যেটা ভালো সেটাই পাঠাবে।)
+  const titleKey = phonKey(pick.title)
+  const sameName = items.filter(it => phonKey(it.title) === titleKey)
+  const artists = new Set(sameName.map(it => norm(it.artist)).filter(Boolean))
+  if (sameName.length < 3 || artists.size < 3) return false
+
+  // ⚠️ এখানে "সবচেয়ে পুরোনোটাই আসল" ধরে ছাড় দেওয়ার চেষ্টা করা হয়েছিল,
+  //    কিন্তু সেটা উল্টো ফল দেয়: আসল গানটা JioSaavn-এ **একেবারেই না
+  //    থাকলে** (Imagine Dragons, Ed Sheeran…) তখন কভারগুলোর মধ্যে
+  //    সবচেয়ে পুরোনোটাও কভারই — আর সে ছাড় পেয়ে পার পেয়ে যেতো।
+  //    তাই সন্দেহ থাকলে YouTube-এ একবার দেখে নেওয়াই ভালো। কয়েক সেকেন্ড
+  //    বেশি লাগে, কিন্তু ভুল গান যায় না।
+  return true
 }
 
 export const MIN_SCORE = 45

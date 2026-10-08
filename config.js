@@ -104,16 +104,16 @@ export function buildConfig() {
     // শতাংশে (0-100)। 0 = শুধু ডাকলে/কমান্ডে কথা বলবে। 8 = মাঝে মাঝে নিজে থেকে।
     autoChatChance: Math.min(100, Math.max(0, num(process.env.AUTO_CHAT_CHANCE, 0))) / 100,
     // 💬 একবার কথা শুরু করলে কত মিনিট পর্যন্ত নাম ছাড়াই উত্তর দেবে
-    convoTimeoutMs: Math.min(180, Math.max(1, num(process.env.CONVO_TIMEOUT_MIN, 30))) * 60 * 1000,
+    convoTimeoutMs: Math.min(180, Math.max(1, num(process.env.CONVO_TIMEOUT_MIN, 10))) * 60 * 1000,
     // 🤫 অন্য দুজন নিজেদের মধ্যে কথা বললে Romeo ঢুকবে কিনা।
     //    false (ডিফল্ট) = শালীন — কারো আড্ডায় বাধা দেবে না
     //    true           = উদ্ধত — সব মেসেজেই জবাব দেবে
     buttIn: bool(process.env.BUTT_IN, false),
     // 🔁 এক কথায় Romeo সর্বোচ্চ কতবার নিজে থেকে উত্তর দেবে।
     //    এরপর আবার নাম দিয়ে ডাকতে হবে — মানে সে একা একা বকবে না, গ্রুপ পরিষ্কার থাকবে
-    maxConvoTurns: Math.min(50, Math.max(1, num(process.env.MAX_CONVO_TURNS, 8))),
+    maxConvoTurns: Math.min(50, Math.max(1, num(process.env.MAX_CONVO_TURNS, 4))),
     // Romeo-এর উত্তর কতটা বড় হতে পারবে (অক্ষরে)। ছোট করতে চাইলে 150/120 দাও
-    replyMaxChars: Math.min(1000, Math.max(60, num(process.env.REPLY_MAX_CHARS, 220))),
+    replyMaxChars: Math.min(1000, Math.max(60, num(process.env.REPLY_MAX_CHARS, 160))),
     // 🎵 গান — দিনে সর্বোচ্চ কতটা গান
     //    WhatsApp-এ কোনো প্রকাশ্য "সীমা" নেই; ঝুঁকি হলো অল্প সময়ে অনেকগুলো
     //    মিডিয়া পাঠালে স্প্যাম-শনাক্তকরণ। বন্ধুদের ২-৪টা গ্রুপে ৫০ টা/দিন

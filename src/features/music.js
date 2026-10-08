@@ -16,7 +16,7 @@ import path from 'node:path'
 import { desEcbDecrypt } from './des.js'
 
 const exec = promisify(execFile)
-import { romanize, hasBengali, bestMatch, scoreMatch, MIN_SCORE } from './match.js'
+import { romanize, hasBengali, bestMatch, scoreMatch, knockoffRisk, MIN_SCORE } from './match.js'
 
 const YTDLP = process.env.YTDLP_BIN || 'yt-dlp'
 
@@ -180,13 +180,17 @@ async function saavnSearch(query) {
     const d = await r.json()
     const list = (d.results || []).filter(s => s?.more_info?.encrypted_media_url)
     if (!list.length) return []
-    return list.map(s => ({
+    return list.map((s, idx) => ({
       title: s.title || '',
       artist:
         s.more_info?.artistMap?.primary_artists?.[0]?.name ||
         s.more_info?.singers ||
         s.subtitle ||
         '',
+      // 🎬 অ্যালবাম ও সাল — আসল গান বনাম কভার আলাদা করতে লাগে
+      album: s.more_info?.album || '',
+      year: Number(s.year || s.more_info?.release_date?.slice(0, 4) || 0) || 0,
+      idx,                       // সোর্সের নিজের র‍্যাঙ্ক (জনপ্রিয়তার ইঙ্গিত)
       duration: Number(s.more_info?.duration || 0) || 0,
       enc: s.more_info.encrypted_media_url,
       page: s.perma_url ? 'https://www.jiosaavn.com' + s.perma_url : ''
@@ -274,6 +278,7 @@ async function decryptUrl(enc, quality) {
 /** JioSaavn থেকে গান — দুটো রাস্তা চেষ্টা করে */
 async function fromSaavn(query, cap) {
   let fallback = null // ডাউনলোড না হলেও অন্তত লিংকটা থাকবে
+  let suspect = false // 🚩 বাছা গানটা কি আসল নয়? (কভার/কপি)
 
   // 🔤 বাংলা লিপিতে JioSaavn কিছুই খুঁজে পায় না — আগে রোমানে বদলে নিই
   const q = hasBengali(query) ? romanize(query) : query
@@ -309,9 +314,22 @@ async function fromSaavn(query, cap) {
       }
     }
   } else {
-    note(`🎯 মিল: "${best.item.title}" — ${best.item.artist} (${best.score}/100)`)
-    // সবচেয়ে ভালো মিল থেকে শুরু করে নিচের দিকে নামবো
-    const ordered = best.ranked.filter(r => r.score >= MIN_SCORE).slice(0, 3).map(r => r.item)
+    note(`🎯 মিল: "${best.item.title}" — ${best.item.artist} (${best.score})`)
+    // 🕵️ এটা কি আসল, নাকি অখ্যাত কারও তুলে দেওয়া কপি?
+    //    সন্দেহ হলে পতাকা তুলে রাখি — fetchSong তখন YouTube-ও দেখবে।
+    suspect = knockoffRisk(query, best.item, items)
+    if (suspect) note('🚩 সন্দেহজনক — মনে হচ্ছে কভার/কপি, YouTube-ও দেখবো')
+    // 🐞 এখানে একটা চুপচাপ বাগ ছিল: bestMatch() সমান-নম্বরের মধ্যে
+    //    সবচেয়ে পুরোনো (= আসল) গানটা বেছে দেয়, কিন্তু নিচের তালিকাটা
+    //    আবার শুধু *নম্বর* ধরে সাজানো হতো। ফলে বাছাই ঠিক হয়েও
+    //    ডাউনলোডের সময় কভারটাই আগে চলে আসতো। এখন বাছা গানটাই প্রথম।
+    const ordered = [
+      best.item,
+      ...best.ranked
+        .filter(r => r.score >= MIN_SCORE && r.item !== best.item)
+        .slice(0, 2)
+        .map(r => r.item)
+    ]
 
     for (const it of ordered) {
       if (!fallback && it.page) {
@@ -322,7 +340,7 @@ async function fromSaavn(query, cap) {
         const url = await decryptUrl(it.enc, quality)
         if (!url) continue
         const got = await grab(url, cap, { title: it.title, artist: it.artist, page: it.page, source: 'JioSaavn' })
-        if (got) return got
+        if (got) return { ...got, suspect }
       }
     }
   }
@@ -507,14 +525,23 @@ export async function fetchSong(query, maxBytes) {
   const cap = maxBytes || 15 * 1024 * 1024
   LOG = [] // নতুন খোঁজা শুরু
   let link = null
+  let saavnBackup = null // 🚩 কপি-সন্দেহে সরিয়ে রাখা গান — YouTube ফেল করলে এটাই যাবে
 
   // ১) JioSaavn — সবচেয়ে নির্ভরযোগ্য, কোনো ইনস্টল লাগে না
   try {
     const s = await fromSaavn(query, cap)
     if (s) {
       note(`${s.source}: ${s.file ? '✅ অডিও পেলাম' : '🔗 শুধু লিংক'}`)
-      if (s.file) return { ...s, log: [...LOG] }
-      link = s
+      // 🚩 গানটা পেয়েছি, কিন্তু মনে হচ্ছে কপি — YouTube-এ আসলটা আছে কিনা
+      //    দেখে নিই। YouTube দিতে পারলে সেটাই পাঠাবো, নইলে এটাই।
+      if (s.file && s.suspect) {
+        saavnBackup = { ...s }
+        note('🔎 আসল গানের খোঁজে YouTube-এ যাচ্ছি…')
+      } else if (s.file) {
+        return { ...s, log: [...LOG] }
+      } else {
+        link = s
+      }
     }
   } catch (e) {
     note(`JioSaavn সমস্যা: ${e?.message || e}`)
@@ -532,7 +559,14 @@ export async function fetchSong(query, maxBytes) {
     note(`yt-dlp সমস্যা: ${e?.message || e}`)
   }
 
-  // ৩) ফাইল পাইনি — তবে লিংক দিই (কখনো খালি হাতে না)
+  // ৩) YouTube পারেনি — তাহলে সন্দেহ থাকলেও JioSaavn-এরটাই পাঠাই
+  //    (চুপ করে থাকার চেয়ে কাছাকাছি গান অনেক ভালো)
+  if (saavnBackup) {
+    note('YouTube পারলো না — JioSaavn-এর গানটাই পাঠাচ্ছি')
+    return { ...saavnBackup, log: [...LOG] }
+  }
+
+  // ৪) ফাইল পাইনি — তবে লিংক দিই (কখনো খালি হাতে না)
   if (link) return { ...link, log: [...LOG], fail: 'nodownload' }
   return { fail: 'nothing', log: [...LOG] }
 }

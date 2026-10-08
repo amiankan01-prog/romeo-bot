@@ -10,6 +10,7 @@ import * as fun from './features/fun.js'
 import { createBrain } from './ai/brain.js'
 import { detectMood } from './ai/mood.js'
 import { Memory } from './ai/memory.js'
+import { createProfiles } from './ai/profile.js'
 import { getMedia, mediaKind } from './media.js'
 import { fetchSong, sendAudio, cleanup } from './features/music.js'
 import { fetchLyrics, formatLyrics } from './features/lyrics.js'
@@ -418,7 +419,16 @@ function songQuery(text) {
   const FILLER = new Set([
     'একটা', 'একটি', 'একটু', 'এক', 'ek', 'ekta', 'ekti', 'please', 'pls',
     'প্লিজ', 'plz', 'দয়া', 'করে', 'তাড়াতাড়ি', 'jaldi', 'abhi', 'now',
-    'না', 'to', 'তো', 're', 'রে', 'ta', 'টা'
+    'না', 'to', 'তো', 're', 'রে', 'ta', 'টা',
+    // 🎭 মুড / গুণবাচক শব্দ — গানের *নাম* নয়, কিন্তু সার্চে দিলে
+    //    ফলাফল পুরো ভুল হয়ে যায়। ("bojhena se bojhena sad" দিলে
+    //    JioSaavn একটা ওড়িয়া ভজন ফেরত দিতো! 😤)
+    'sad', 'স্যাড', 'দুঃখের', 'দুখের', 'কষ্টের', 'happy', 'খুশির',
+    'romantic', 'রোমান্টিক', 'love', 'ভালোবাসার', 'প্রেমের',
+    'slow', 'fast', 'new', 'নতুন', 'old', 'পুরোনো', 'পুরনো',
+    'full', 'original', 'আসল', 'অরিজিনাল', 'version', 'ভার্সন',
+    'audio', 'video', 'hd', 'mp3', 'quality', 'best', 'সেরা',
+    'bangla', 'বাংলা', 'hindi', 'হিন্দি', 'english', 'ইংরেজি'
   ])
   const cmdWord = w => SONG_WORDS.has(w) || SONG_VERBS.has(w)
   const junk = w => STOP_WORDS.has(w) || cmdWord(w) || NICK_WORDS.has(w) || FILLER.has(w)
@@ -442,7 +452,11 @@ function songQuery(text) {
     while (a < t.length && FILLER.has(t[a])) a++
     let b = t.length
     while (b > a && FILLER.has(t[b - 1])) b--
-    return t.slice(a, b).join(' ').trim()
+    const kept = t.slice(a, b)
+    // মাঝখানে পড়ে থাকা মুড-শব্দও ফেলি — তবে সব ফেলে দিলে নাম থাকবে না,
+    // তাই অন্তত একটা শব্দ বাঁচিয়ে রাখি ("Sad Song" নামের গান যেন না হারায়)
+    const lean = kept.filter(w => !FILLER.has(w))
+    return (lean.length ? lean : kept).join(' ').trim()
   }
 
   // আদেশের পরে কিছু নেই (যেমন "projapoti গান দাও") — তখন দুই
@@ -472,6 +486,11 @@ export function createRouter(cfg, db) {
   const limiter = new RateLimiter(cfg.cooldownMs, cfg.dailyCap)
   const memory = new Memory({ max: cfg.contextSize })
   const brain = createBrain(cfg, db)
+  // 🧠 স্থায়ী স্মৃতি — কে কেমন, MongoDB-তে জমা থাকে
+  const profiles = createProfiles(cfg, db)
+  profiles.init().catch(e => console.error('⚠️  স্মৃতি চালু হয়নি:', e?.message || e))
+  // কার সাথে কতগুলো কথা হলো — প্রতি কয়েকটায় একবার নতুন তথ্য শিখি
+  const sinceLearn = new Map()
 
   const sentIds = new Set()
   const sentQueue = []
@@ -565,6 +584,40 @@ export function createRouter(cfg, db) {
    * এই মেসেজটা সত্যিই Romeo-র জন্য, নাকি অন্য কারো?
    * যেমন "সুমিত, তুই কী বলিস?" → সুমিত-এর জন্য, Romeo-র জন্য না
    */
+  /**
+   * 👥 গ্রুপের সব সদস্যের নাম আগেভাগে জেনে রাখা।
+   *
+   * আগে nameBook-এ কেবল **যারা একবার কথা বলেছে** তাদের নাম থাকতো।
+   * ফলে "সুমিত শোন না" লিখলে — সুমিত এখনো কিছু না বললে — Romeo
+   * বুঝতেই পারতো না যে ডাকটা তার নয়, আর ঢুকে পড়তো।
+   *
+   * এখন WhatsApp থেকে গ্রুপের সদস্য-তালিকা এনে রাখি (ঘণ্টায় একবার)।
+   * পেছনে চলে, তাই কোনো মেসেজ দেরি হয় না।
+   */
+  const rosterAt = new Map() // jid -> কখন শেষবার আনা হয়েছে
+  const ROSTER_TTL = 60 * 60 * 1000
+  function refreshRoster(sock, jid) {
+    if (!jid.endsWith('@g.us') || typeof sock?.groupMetadata !== 'function') return
+    const last = rosterAt.get(jid) || 0
+    if (Date.now() - last < ROSTER_TTL) return
+    rosterAt.set(jid, Date.now())
+    ;(async () => {
+      try {
+        const meta = await sock.groupMetadata(jid)
+        let n = 0
+        for (const p of meta?.participants || []) {
+          const num = String(p.id || '').replace(/\D/g, '')
+          const nm = (p.notify || p.name || '').trim()
+          if (num && nm && nm.length >= 3 && num !== cfg.botNumber) {
+            nameBook.set(`${jid}:${num}`, nm)
+            n++
+          }
+        }
+        if (n) console.error(`👥 গ্রুপের ${n} জনের নাম জেনে রাখলাম`)
+      } catch { /* নাম না পেলেও আগের মতোই চলবে */ }
+    })()
+  }
+
   function addressedToOther(text, jid, user) {
     const t = text.trim()
     for (const [key, name] of nameBook) {
@@ -654,13 +707,51 @@ export function createRouter(cfg, db) {
    * AI কল।
    * @returns {Promise<string|null>} null = চুপ থাকবে (স্প্যাম নয়, এরর নয়)
    */
+  /**
+   * 🧠 মাঝে মাঝে আড্ডা থেকে পাকা তথ্য তুলে স্মৃতিতে রাখি।
+   *
+   * প্রতি মেসেজে করলে কোটা ফুরিয়ে যেতো, তাই প্রতি LEARN_EVERY-তে একবার।
+   * পেছনে (await ছাড়া) চলে — তাই উত্তর দিতে একটুও দেরি হয় না।
+   */
+  const LEARN_EVERY = 6
+  function maybeLearn(jid, user, pushName) {
+    if (!user || !brain.enabled()) return
+    const k = `${jid}:${user}`
+    const n = (sinceLearn.get(k) || 0) + 1
+    if (n < LEARN_EVERY) { sinceLearn.set(k, n); return }
+    sinceLearn.set(k, 0)
+
+    // কোটার শেষ দিকে শেখা বন্ধ — কথা বলাটাই বেশি জরুরি
+    if (brain.quotaLeft() < 25) return
+
+    ;(async () => {
+      try {
+        const name = pushName || profiles.get(jid, user)?.name || ''
+        const facts = await brain.learn({ history: memory.get(jid), name })
+        if (facts.length) {
+          const added = profiles.learn(jid, user, facts)
+          if (added) console.error(`🧠 ${name || user}: ${added}টা নতুন কথা মনে রাখলাম`)
+        }
+      } catch { /* শেখা না হলেও আড্ডা চলবে */ }
+    })()
+  }
+
   async function aiReply(sock, msg, prompt, opts = {}) {
     const jid = msg.key.remoteJid
+    // 🧠 এই মানুষটা সম্পর্কে যা সত্যিই জানি, সেটা Romeo-র সামনে রাখি।
+    //    কিছু না জানলে ফাঁকা যায় — তখন সে বানিয়ে বলার বদলে জিজ্ঞেস করবে।
+    const who = senderNumber(msg)
+    const extra = profiles.brief(jid, [who])
     const r = opts.media
-      ? await brain.see({ media: opts.media, prompt })
-      : await brain.ask({ history: memory.get(jid), text: prompt })
+      ? await brain.see({ media: opts.media, prompt, extra })
+      : await brain.ask({ history: memory.get(jid), text: prompt, extra })
 
-    if (r.ok) return r.text
+    if (r.ok) {
+      // 🧠 প্রতি ৬টা কথায় একবার নতুন কিছু শিখে রাখি।
+      //    পেছনে চলে — উত্তর পাঠাতে এক মুহূর্তও দেরি হয় না।
+      maybeLearn(jid, who, msg.pushName)
+      return r.text
+    }
 
     const owner = isOwner(msg)
 
@@ -881,6 +972,8 @@ export function createRouter(cfg, db) {
     if (kind) cacheMedia(jid, msg)
 
     // স্মৃতিতে রাখি (ছবি/ভয়েস হলে বর্ণনা দিয়ে)
+    // 🧠 কে কথা বলছে — চিনে রাখি (নাম + কতবার দেখা হলো)
+    profiles.touch(jid, senderNumber(msg), msg.pushName || name)
     if (text) memory.add(jid, { name, text })
     else if (kind) memory.add(jid, { name, text: `[একটা ${kind === 'voice' ? 'ভয়েস নোট' : 'ছবি'} পাঠালো]` })
 
@@ -977,6 +1070,7 @@ export function createRouter(cfg, db) {
 
     lastSpeaker.set(jid, user)
     if (msg.pushName && user) nameBook.set(`${jid}:${user}`, msg.pushName)
+    refreshRoster(sock, jid) // গ্রুপের বাকিদের নামও জেনে রাখি (ঘণ্টায় একবার)
 
     // অন্য কাউকে উদ্দেশ্য করে কথা বলছে? → Romeo চুপ থাকবে (আড্ডায় বাধা দেবে না)
     const quotingOther = !!qid && !sentIds.has(qid)
@@ -1096,7 +1190,11 @@ export function createRouter(cfg, db) {
 
     if (matchCommand(text, ['ভুলে যা', 'forget'])) {
       memory.clear(jid)
-      return reply(sock, msg, '_ঠিক আছে, সব ভুলে গেলাম_ 🧹')
+      const n = profiles.forgetChat(jid) // স্থায়ী স্মৃতিও মুছে যাক
+      sinceLearn.clear()
+      return reply(sock, msg, n
+        ? `_ঠিক আছে, সব ভুলে গেলাম_ 🧹`
+        : '_ঠিক আছে, সব ভুলে গেলাম_ 🧹')
     }
 
     // ---------- ৫.২ নিজের পরিচয় ("Romeo তোমার intro দাও") ----------
@@ -1141,7 +1239,8 @@ export function createRouter(cfg, db) {
       const forMe =
         mentioned ||
         replyingToRomeo ||
-        (convoActive && !talkingToOther && (cfg.buttIn || !otherSpokeLast))
+        (convoActive && !talkingToOther &&
+          (cfg.buttIn || isDm || prevSpeaker === 'ME'))
 
       if (forMe && brain.enabled() && brain.quotaLeft() > 0) {
         const media = await getMedia(msg, sock)
@@ -1184,9 +1283,27 @@ export function createRouter(cfg, db) {
       // AI বন্ধ বা কোটা শেষ → কথা চালিয়ে যেতে পারবে না, চুপই ভালো
       if (!brain.enabled() || brain.quotaLeft() <= 0) return
 
-      // 🤫 গ্রুপে শেষ কথা অন্য কেউ বলেছে → তুমি ওর সাথে কথা বলছো, Romeo-র সাথে না
-      //    (তবে Romeo-র মেসেজে রিপ্লাই দিলে বা প্রশ্ন করলে সে জবাব দেবেই)
-      if (!cfg.buttIn && !replyingToRomeo && !isQuestion(text) && otherSpokeLast) return
+      // 🤫 ======= আড্ডায় বাধা না দেওয়ার মূল নিয়ম =======
+      //
+      //    আগের নিয়মে দুটো বড় ফাঁক ছিল, আর সে দুটো দিয়েই Romeo
+      //    সবার কথার মাঝখানে ঢুকে পড়তো:
+      //
+      //    ফাঁক ১ — `isQuestion(text)` ছাড়পত্র দিতো। কিন্তু গ্রুপে
+      //      বেশিরভাগ প্রশ্নই একে অপরকে করা হয় ("তুই কাল আসবি?")।
+      //      Romeo-র সাথে কথা চালু থাকায় সে ওটাকে নিজের প্রশ্ন ভেবে
+      //      জবাব দিয়ে দিতো।
+      //
+      //    ফাঁক ২ — `otherSpokeLast` কেবল *অন্য কেউ* শেষ কথা বললে
+      //      আটকাতো। কিন্তু যে নিজেই Romeo-র সাথে কথা বলেছিল, সে-ই
+      //      যখন বন্ধুর দিকে ফিরে কথা বলতো, তখন prevSpeaker === user
+      //      হওয়ায় বাধা উঠে যেতো আর Romeo ঢুকে পড়তো।
+      //
+      //    এখনকার নিয়ম সহজ আর মানুষের মতো: **নাম ধরে না ডাকলে বা
+      //    রিপ্লাই না করলে, Romeo তখনই কথা চালাবে যখন ঠিক আগের
+      //    কথাটা সে-ই বলেছিল** — অর্থাৎ সত্যিকারের পাল্টাপাল্টি চলছে।
+      //    মাঝে অন্য কেউ একটা কথাও বললেই আড্ডাটা আর তার নয়, সে চুপ।
+      const romeoSpokeLast = prevSpeaker === 'ME'
+      if (!isDm && !cfg.buttIn && !replyingToRomeo && !romeoSpokeLast) return
 
       // 🔁 যথেষ্ট হয়েছে — Romeo একা একা বকবে না। এবার নাম দিয়ে ডাকতে হবে
       if (!replyingToRomeo && (convoTurns.get(convoKey(jid, user)) || 0) >= cfg.maxConvoTurns) return
