@@ -1,0 +1,9 @@
+node_modules
+.romeo-sessions
+.romeo-sessions.bak.*
+data
+*.log
+.git
+.env
+.DS_Store
+_mongotest.mjs

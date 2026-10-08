@@ -1,0 +1,40 @@
+# ==========================================================
+#  ☁️ Render-এর জন্য প্রস্তুত নকশা
+#
+#  Render এই ফাইলটা পড়ে নিজে থেকেই সব সাজিয়ে নেবে।
+#  তোমাকে শুধু নিচের গোপন সেটিংগুলো ওদের ওয়েবসাইটে বসাতে হবে:
+#     GEMINI_API_KEY   — Romeo-র মস্তিষ্ক
+#     MONGODB_URI      — লগইন মনে রাখার জায়গা
+#     BOT_NUMBER       — তোমার WhatsApp নাম্বার
+# ==========================================================
+services:
+  - type: web
+    name: romeo-bot
+    runtime: docker
+    plan: free
+    region: singapore          # ভারতের সবচেয়ে কাছে — গান দ্রুত আসবে
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      - key: PORT
+        value: 10000
+      - key: ALLOW_ALL_GROUPS
+        value: "true"
+      - key: ALLOW_DM
+        value: "true"
+      - key: DM_AUTO_REPLY
+        value: "true"
+      - key: SONG_DAILY_CAP
+        value: "50"
+      - key: CONVO_TIMEOUT_MIN
+        value: "10"
+      - key: GEMINI_MODEL
+        value: gemini-3.5-flash-lite
+      # 🔒 এই তিনটে Render-এর ওয়েবসাইটে নিজে হাতে বসাবে
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: MONGODB_URI
+        sync: false
+      - key: BOT_NUMBER
+        sync: false

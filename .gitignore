@@ -1,0 +1,12 @@
+# 🔒 গোপন জিনিস — এগুলো কখনো GitHub-এ যাবে না
+.env
+.romeo-sessions/
+.romeo-sessions.bak.*/
+data/
+
+# অপ্রয়োজনীয়
+node_modules/
+*.log
+*.zip
+.DS_Store
+tmp/

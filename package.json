@@ -1,0 +1,21 @@
+{
+  "name": "romeo-bot",
+  "version": "1.0.0",
+  "description": "Romeo Mamu - AI WhatsApp group bot for friends (Baileys + Gemini)",
+  "type": "module",
+  "main": "index.js",
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "scripts": {
+    "start": "node index.js",
+    "pair": "node index.js"
+  },
+  "dependencies": {
+    "@whiskeysockets/baileys": "6.7.24",
+    "crypto-js": "^4.2.0",
+    "mongodb": "^7.7.0",
+    "pino": "^9.6.0",
+    "qrcode-terminal": "^0.12.0"
+  }
+}
