@@ -713,10 +713,13 @@ export function createRouter(cfg, db) {
    * প্রতি মেসেজে করলে কোটা ফুরিয়ে যেতো, তাই প্রতি LEARN_EVERY-তে একবার।
    * পেছনে (await ছাড়া) চলে — তাই উত্তর দিতে একটুও দেরি হয় না।
    */
-  const LEARN_EVERY = 6
+  // কোটা এখন অনেক বড় (দিনে ~১০০০), তাই আরও ঘন ঘন শিখতে পারি
+  const LEARN_EVERY = 4
   function maybeLearn(jid, user, pushName) {
     if (!user || !brain.enabled()) return
     const k = `${jid}:${user}`
+    // 🧹 গোনার খাতাটা অসীম বাড়তে দেবো না (দীর্ঘদিন চললে র‍্যাম খেতো)
+    if (sinceLearn.size > 2000) sinceLearn.clear()
     const n = (sinceLearn.get(k) || 0) + 1
     if (n < LEARN_EVERY) { sinceLearn.set(k, n); return }
     sinceLearn.set(k, 0)
@@ -769,7 +772,10 @@ export function createRouter(cfg, db) {
         quotaNoticeShown = true
         return '_মামা আজ অনেক কথা বলেছে, একটু বিশ্রাম নিচ্ছে_ 😴 কালকে আবার!'
       }
-      return null
+      // 🫂 কোটা ফুরোলেও কেউ দুঃখে/ভয়ে/রাগে থাকলে চুপ করে থাকা নিষ্ঠুর।
+      //    তাই আবেগের মুহূর্তে অন্তত ঠিক সুরের একটা লাইন যাক।
+      //    সাধারণ গল্পে চুপই থাকবে — নাহলে সারাদিন "হুম, বল" বলে বিরক্ত করবে।
+      return moodFallback(prompt, false)
     }
 
     if (r.reason === 'net') {
@@ -791,9 +797,20 @@ export function createRouter(cfg, db) {
    * এখন: মুড বুঝে মানানসই একটা লাইন — সাথে সাথি, কোনো খরচ ছাড়া।
    * মুড নিরপেক্ষ হলে তবুও চুপ থাকবো (ফালতু বকবক নয়)।
    */
-  function moodFallback(text) {
+  /**
+   * AI সাড়া না দিলে অন্তত *ঠিক অনুভূতিতে* কিছু একটা বলো।
+   *
+   * ⚠️ আগে নিরপেক্ষ মুডে `null` যেতো — মানে Romeo পুরো চুপ। Google-এর
+   *    সার্ভারে ভিড় থাকলে (৫০৩) আড্ডার মাঝখানে সে হঠাৎ উধাও হয়ে যেতো,
+   *    আর সবাই ভাবতো বট বন্ধ হয়ে গেছে। এখন ছোট্ট একটা স্বাভাবিক কথা
+   *    বলে কথাটা জিইয়ে রাখে।
+   *
+   * @param {boolean} engaged  কেউ কি সরাসরি Romeo-র সাথেই কথা বলছে?
+   */
+  function moodFallback(text, engaged = true) {
     const { mood } = detectMood(text)
-    return mood === 'neutral' ? null : fun.moodLine(mood)
+    if (mood !== 'neutral') return fun.moodLine(mood)
+    return engaged ? pickFresh(fun.BUSY_LINES, 'busy') : null
   }
 
   /** AI দিয়ে উত্তর — null এলে কিছু পাঠাবে না */

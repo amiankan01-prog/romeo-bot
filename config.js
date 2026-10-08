@@ -86,17 +86,17 @@ export function buildConfig() {
     dmAutoReply: bool(process.env.DM_AUTO_REPLY, true),
 
     // --- রেট লিমিট ---
-    cooldownMs: num(process.env.COOLDOWN_MS, 4000),
-    dailyCap: num(process.env.DAILY_CAP_PER_USER, 120),
+    cooldownMs: num(process.env.COOLDOWN_MS, 2500),
+    dailyCap: num(process.env.DAILY_CAP_PER_USER, 400),
 
     // --- AI (ফেজ ২) ---
     geminiApiKey: (process.env.GEMINI_API_KEY || '').trim(),
     // প্রধান: flash-lite (দ্রুত, "চিন্তা" করে না → কাটা উত্তর আসে না)
     geminiModel: (process.env.GEMINI_MODEL || 'gemini-flash-lite-latest').trim(),
     groqApiKey: (process.env.GROQ_API_KEY || '').trim(), // ঐচ্ছিক ব্যাকআপ
-    groqModel: (process.env.GROQ_MODEL || 'llama-3.3-70b-versatile').trim(),
-    aiDailyCap: num(process.env.AI_DAILY_CAP, 300), // দিনে সর্বোচ্চ AI কল
-    contextSize: num(process.env.CONTEXT_SIZE, 30), // কতটা মেসেজ মনে রাখবে
+    groqModel: (process.env.GROQ_MODEL || 'openai/gpt-oss-120b').trim(),
+    aiDailyCap: num(process.env.AI_DAILY_CAP, 1000), // দিনে সর্বোচ্চ AI কল
+    contextSize: num(process.env.CONTEXT_SIZE, 60), // কতটা মেসেজ মনে রাখবে
 
     // --- আচরণ ---
     sendReadReceipts: bool(process.env.SEND_READ_RECEIPTS, false),
@@ -118,9 +118,9 @@ export function buildConfig() {
     //    WhatsApp-এ কোনো প্রকাশ্য "সীমা" নেই; ঝুঁকি হলো অল্প সময়ে অনেকগুলো
     //    মিডিয়া পাঠালে স্প্যাম-শনাক্তকরণ। বন্ধুদের ২-৪টা গ্রুপে ৫০ টা/দিন
     //    নিরাপদ — চাইলে .env থেকে আরও বাড়ানো যাবে (এখন সর্বোচ্চ ৫০০)।
-    songDailyCap: Math.min(500, Math.max(1, num(process.env.SONG_DAILY_CAP, 50))),
+    songDailyCap: Math.min(500, Math.max(1, num(process.env.SONG_DAILY_CAP, 200))),
     // এক গানের সর্বোচ্চ সাইজ (MB) — এর বেশি হলে ডাউনলোড না পাঠিয়ে শুধু লিংক
-    songMaxBytes: Math.min(20, Math.max(2, num(process.env.SONG_MAX_MB, 15))) * 1024 * 1024,
+    songMaxBytes: Math.min(20, Math.max(2, num(process.env.SONG_MAX_MB, 16))) * 1024 * 1024,
     // গান না এলে কী কী চেষ্টা করলো সেটা গ্রুপেই দেখাবে (খোঁজার জন্য)
     songDebug: bool(process.env.SONG_DEBUG, false),
     debug: bool(process.env.DEBUG, false),

@@ -9,6 +9,7 @@ import { createRouter } from './src/router.js'
 import * as db from './src/store/db.js'
 import { pick } from './src/utils.js'
 import { startHealthServer } from './src/health.js'
+import { sweepTemp } from './src/features/music.js'
 
 const C = { reset: '\u001b[0m', bold: '\u001b[1m', magenta: '\u001b[35m', cyan: '\u001b[36m', gray: '\u001b[90m', yellow: '\u001b[33m' }
 
@@ -44,6 +45,11 @@ async function main() {
 
   db.init(cfg.dbFile)
   db.set('startedAt', Date.now())
+
+  // 🧹 গত দফার পড়ে থাকা অস্থায়ী ফাইল ঝেড়ে ফেলি, তারপর আধঘণ্টায় একবার।
+  //    না করলে Render-এর ছোট ডিস্ক ভরে গিয়ে Romeo বন্ধ হয়ে যায়।
+  sweepTemp(0)
+  setInterval(() => sweepTemp(), 30 * 60 * 1000).unref?.()
 
   const router = createRouter(cfg, db)
 

@@ -18,15 +18,25 @@ const BASE = 'https://generativelanguage.googleapis.com/v1beta/models'
 //    তাই একটার কোটা শেষ হলে পরেরটায় গেলে Romeo চলতেই থাকে।
 //    (২০২৬-১০-০৭ তারিখে সবগুলো সরাসরি পরীক্ষা করে বাছা)
 //    ক্রমটা আসল গতি মেপে সাজানো — চ্যাটে দেরি মানেই বিরক্তি।
+// 📊 ফ্রি কোটা মডেল-ভেদে **আকাশ-পাতাল** আলাদা (যাচাই: সেপ্টেম্বর ২০২৬):
+//      flash-lite ঘরানা → দিনে ~৫০০ কল, মিনিটে ১৫
+//      flash ঘরানা      → দিনে মাত্র ~২০ কল, মিনিটে ৫
+//
+//    আগের ক্রমে ২ নম্বরেই ছিল `gemini-3.6-flash` — মাত্র ২০ কলের মডেল।
+//    সেটা দিনের শুরুতেই ফুরিয়ে যেতো, আর প্রতিবার একটা করে ব্যর্থ
+//    রাউন্ড-ট্রিপ নষ্ট হতো (ধীরগতির আসল কারণ)।
+//
+//    এখন বড় কোটার মডেলগুলো আগে, ছোট কোটারগুলো শেষে — এতে দিনে
+//    প্রায় **৫ গুণ বেশি** কথা বলা যায়।
 const MODEL_CHAIN = [
-  'gemini-flash-lite-latest',  // ✅ ০.৬ সেকেন্ড — সবচেয়ে দ্রুত
-  'gemini-3.6-flash',          // ✅ ৫.২ সেকেন্ড
-  'gemini-3.1-flash-lite',     // ✅ ৯.৫ সেকেন্ড
-  'gemini-3.5-flash-lite',
-  'gemini-3.7-flash',          // ⚠️ কাজ করে, কিন্তু ৩০ সেকেন্ড+ নেয়
-  'gemini-3.8-flash',
-  'gemini-3.5-flash',
-  'gemini-flash-latest'
+  'gemini-flash-lite-latest',  // ~৫০০/দিন · ০.৬ সেকেন্ড — সবচেয়ে দ্রুত
+  'gemini-3.1-flash-lite',     // ~৫০০/দিন · নিজের আলাদা কোটা
+  'gemini-3.5-flash-lite',     // ~৫০০/দিন
+  'gemini-3.6-flash',          // ~২০/দিন · মান ভালো, তাই আগে
+  'gemini-3.5-flash',          // ~২০/দিন
+  'gemini-3.8-flash',          // ~২০/দিন
+  'gemini-flash-latest',       // ~২০/দিন
+  'gemini-3.7-flash'           // ~২০/দিন · ৩০ সেকেন্ড+ নেয়, তাই একদম শেষে
 ]
 
 // 🧠 আজ কোন মডেলের কোটা শেষ হয়ে গেছে — মনে রাখি, যাতে বারবার
@@ -47,12 +57,37 @@ const markExhausted = m => {
   exhausted.set(m, t.getTime())
 }
 
+/**
+ * 🚦 সাময়িক ভিড় (503 / রেট-লিমিট) — অল্প সময়ের জন্য সরিয়ে রাখি।
+ *
+ * আসল সমস্যা ছিল: প্রতিটা নতুন মেসেজে Romeo আবার সেই একই ব্যস্ত
+ * মডেলে গিয়ে ধাক্কা খেতো, সময় নষ্ট করতো, আর বাজেট ফুরিয়ে যেতো।
+ * এখন ৯০ সেকেন্ড ওটাকে এড়িয়ে চলি — ততক্ষণে ভিড় সাধারণত কেটে যায়।
+ */
+const markBusy = m => exhausted.set(m, Date.now() + 90 * 1000)
+
+/**
+ * 🏃 শেষবার যে মডেলটা সত্যিই কাজ করেছে।
+ *
+ * ফ্রি টিয়ারে ভিড় ঘণ্টায় ঘণ্টায় বদলায় — কখনো flash-lite ঠাসা, flash খালি;
+ * কখনো উল্টো। স্থির তালিকা ধরে চললে Romeo বারবার ব্যস্ত দরজায় ধাক্কা
+ * খেয়ে ৩০ সেকেন্ড নষ্ট করতো।
+ *
+ * এখন যেটা শেষবার কাজ করেছে সেটাই আগে চেষ্টা করি — পরিস্থিতি বদলালে
+ * Romeo নিজে থেকেই মানিয়ে নেয়। (প্রক্রিয়া রিস্টার্ট হলে আবার শূন্য থেকে।)
+ */
+let lastGood = null
+
 // "থিংকিং" মডেলগুলো উত্তরের আগে ৪০০-৬০০ টোকেন চিন্তা করে →
 // তাই maxOutputTokens বড় রাখতে হবে, নাহলে উত্তর মাঝখানে কেটে যায়
 const MAX_TOKENS = 2048
-// ⏱️ চ্যাটে ৪৫ সেকেন্ড অপেক্ষা করানো যায় না — ২০ সেকেন্ডেই হাল ছেড়ে
-//    পরের চেষ্টা/মডেলে যাবো। সব মিলিয়ে তবু দ্রুত উত্তর আসে।
-const TIMEOUT_MS = 20000
+// ⏱️ একটা মডেলের জন্য সর্বোচ্চ অপেক্ষা।
+//    আগে ২০ সেকেন্ড ছিল — কিন্তু সুস্থ flash-lite ২ সেকেন্ডেই উত্তর দেয়।
+//    ২০ সেকেন্ড ধরে একটা ব্যস্ত মডেলে ঝুলে থাকলে মোট ২৮ সেকেন্ডের
+//    বাজেটের প্রায় পুরোটাই শেষ, আর ভালো মডেলটা পর্যন্ত পৌঁছানোই যেতো না
+//    — Romeo তখন "সময় ফুরিয়ে গেলো" বলে চুপ করে যেতো।
+//    ৭ সেকেন্ডে হাল ছেড়ে পরের মডেলে গেলে অনেক বেশি দরজা খোলা যায়।
+const TIMEOUT_MS = 7000
 
 export class AIError extends Error {
   constructor(kind, message) {
@@ -98,7 +133,7 @@ function buildBody({ system, history, text, media }) {
   }
 }
 
-export async function geminiChat({ apiKey, model, system, history, text, media, deadlineMs = 28000 }) {
+export async function geminiChat({ apiKey, model, system, history, text, media, deadlineMs = 14000 }) {
   if (!apiKey) throw new AIError('KEY', 'GEMINI_API_KEY সেট করা নেই')
 
   // ⏱️ সব মডেল মিলিয়ে সর্বোচ্চ কতক্ষণ। ফ্রি টিয়ারে অনেকগুলো মডেল
@@ -112,7 +147,11 @@ export async function geminiChat({ apiKey, model, system, history, text, media, 
   // আজ যাদের কোটা ফুরিয়েছে তাদের পিছনে পাঠাই (একেবারে বাদ দিই না —
   // সব ফুরিয়ে গেলে অন্তত একবার চেষ্টা করে দেখা ভালো)
   const fresh = all.filter(m => !isExhausted(m))
-  const models = fresh.length ? fresh : all
+  let models = fresh.length ? fresh : all
+  // 🏃 শেষবারের বিজয়ীকে সামনে আনি
+  if (lastGood && models.includes(lastGood)) {
+    models = [lastGood, ...models.filter(m => m !== lastGood)]
+  }
   let lastError = 'কোনো মডেল সাড়া দেয়নি'
   let quotaHits = 0
 
@@ -138,7 +177,10 @@ export async function geminiChat({ apiKey, model, system, history, text, media, 
         //    এখন: ধরে নিই এটা সাময়িক, পরের চেষ্টা/মডেলে এগোই।
         const net = err?.name === 'TimeoutError' || err?.name === 'AbortError'
         lastError = `${m}: ${net ? 'সময় শেষ' : err?.message || 'নেট সমস্যা'}`
-        if (attempt < 3) { await sleep(400 * attempt); continue }
+        // টাইমআউট মানে এই মডেল ধীর — একই দরজায় আবার দাঁড়িয়ে থাকার
+        // চেয়ে পরের মডেলে যাওয়া অনেক দ্রুত।
+        if (net) { markBusy(m); break }
+        if (attempt < 2) { await sleep(300); continue }
         break
       }
 
@@ -146,7 +188,7 @@ export async function geminiChat({ apiKey, model, system, history, text, media, 
         const json = await res.json().catch(() => ({}))
         const parts = (json?.candidates?.[0]?.content?.parts || []).filter(p => !p.thought)
         const out = parts.map(p => p.text || '').join('').trim()
-        if (out) return { text: out, model: m }
+        if (out) { lastGood = m; return { text: out, model: m } }
         lastError = `${m}: খালি উত্তর`
         break
       }
@@ -179,15 +221,17 @@ export async function geminiChat({ apiKey, model, system, history, text, media, 
         // ⚡ রেট-লিমিট মানে এই মডেলে এখন ভিড়। আগে এখানে ৩ বার ঘুমিয়ে
         //    অপেক্ষা করা হতো (২.৪ সেকেন্ড নষ্ট), অথচ পাশের মডেলটা খালি।
         //    প্রতিটা মডেলের লিমিট আলাদা — তাই সোজা পরেরটায় চলে যাই।
+        markBusy(m)
         lastError = `${m}: ব্যস্ত (429)`
         break
       }
 
       if (res.status === 503 || res.status === 500) {
-        // ⚡ 503 = ওই মডেলটা এখন ব্যস্ত। ৩ বার ঘুরে সময় নষ্ট না করে
-        //    একবার চেষ্টা করেই পরের মডেলে চলে যাই — ওটা সাধারণত খালি থাকে।
+        // ⚡ 503 = ওই মডেলটা *এখন* ভিড়ে ঠাসা। আগে এখানে ঘুমিয়ে আবার
+        //    একই দরজায় ধাক্কা দেওয়া হতো — কিন্তু ভিড় আধ সেকেন্ডে কাটে না।
+        //    পাশের মডেলটা সাধারণত খালি, তাই সোজা সেখানেই যাই।
+        markBusy(m)
         lastError = `${m}: সাময়িক ব্যস্ত (${res.status})`
-        if (attempt < 2) { await sleep(500); continue }
         break
       }
 

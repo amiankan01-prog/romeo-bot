@@ -14,8 +14,8 @@
 import fs from 'node:fs'
 import path from 'node:path'
 
-const MAX_FACTS = 10          // একজনের সর্বোচ্চ কতগুলো কথা মনে রাখবে
-const MAX_PEOPLE = 400        // মোট কতজনকে মনে রাখবে (র‍্যাম বাঁচাতে)
+const MAX_FACTS = 20          // একজনের সর্বোচ্চ কতগুলো কথা মনে রাখবে
+const MAX_PEOPLE = 1000       // মোট কতজনকে মনে রাখবে (র‍্যাম বাঁচাতে)
 const MAX_FACT_LEN = 110      // একটা তথ্য কত বড় হতে পারে
 const SAVE_DEBOUNCE = 4000    // লেখালেখি জমিয়ে একবারে সেভ
 
@@ -67,7 +67,18 @@ export function createProfiles(cfg, db) {
         await col.createIndex({ key: 1 }, { unique: true }).catch(() => {})
         const rows = await col.find({}).limit(MAX_PEOPLE).toArray()
         for (const r of rows) {
-          people.set(r.key, { name: r.name || '', facts: r.facts || [], seen: r.seen || 0, at: r.at || 0 })
+          // ⚠️ init() শেষ হওয়ার আগেই মেসেজ এসে গেলে touch() ইতিমধ্যে
+          //    কাউকে বসিয়ে ফেলতে পারে — তাকে চাপা দেবো না, মিলিয়ে নেবো।
+          const live = people.get(r.key)
+          const saved = { name: r.name || '', facts: r.facts || [], seen: r.seen || 0, at: r.at || 0 }
+          if (live) {
+            saved.name = live.name || saved.name
+            saved.seen = Math.max(saved.seen, live.seen || 0)
+            for (const f of live.facts || []) {
+              if (!saved.facts.some(x => sameFact(x, f))) saved.facts.push(f)
+            }
+          }
+          people.set(r.key, saved)
         }
         console.error(`🧠 স্মৃতি: MongoDB থেকে ${rows.length} জনকে মনে আছে`)
         return

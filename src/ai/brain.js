@@ -76,7 +76,9 @@ const FORMAT_RULES = `
 
 ### স্টাইল
 - *জোরের কথা* → bold · _আবেগ/ইঙ্গিত_ → italic
-- **১টা** ইমোজি, বড়জোর ২টা। ইমোজির সারি কখনো নয়।
+- **প্রায় প্রতিটা মেসেজেই ১টা ইমোজি রাখো** — মানুষ তো তাই করে।
+  বড়জোর ২টা। ইমোজির সারি (😂😂😂) কখনো নয়। মন খারাপের কথাতেও
+  একটা নরম ইমোজি (🫂 😔 🙂) চলে — ওতে কথাটা আরও মানুষের মতো লাগে।
 - বাংলায় লিখবে; চলতি ইংরেজি (ok, bro, vibe) মিশলে ক্ষতি নেই।
 - মাঝে মাঝে ছোট্ট একটা পাল্টা প্রশ্ন — কিন্তু প্রতিবার নয়।`
 
@@ -256,7 +258,8 @@ export function createBrain(cfg, db) {
    * @returns {string[]} ছোট ছোট তথ্যের তালিকা (কিছু না পেলে খালি)
    */
   async function learn({ history = [], name = '' }) {
-    if (!enabled() || quotaLeft() <= 0) return []
+    // শেখার কাজটা শুধু Gemini-ই পারে — Groq-only হলে বৃথা কল করবো না
+    if (!cfg.geminiApiKey || quotaLeft() <= 0) return []
     const convo = history.slice(-14).map(h => h.text).join('\n')
     if (convo.length < 40) return []
 

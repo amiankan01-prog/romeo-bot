@@ -156,7 +156,11 @@ function closeness(a, b) {
   const pa = phon(a), pb = phon(b)
   if (pa && pa === pb) return 1
   if (a.length < 3 || b.length < 3) return 0
-  if (a.startsWith(b) || b.startsWith(a)) return 0.9
+  // ⚠️ আগে এখানে ০.৯ ফেরত যেতো, আর ০.৯-ই ছিল "শব্দটা টাইটেলে আছে"
+  //    ধরার সীমা। ফলে "believer" চাইলে "Believe Me"-ও পুরো নম্বর পেতো
+  //    (একটা উপসর্গ মিললেই!) আর অন্য গান পাশ করে যেতো।
+  //    ০.৮৫ করায় উপসর্গ-মিল এখন "কাছাকাছি" গোনা হয়, "একই" নয়।
+  if (a.startsWith(b) || b.startsWith(a)) return 0.85
   // Levenshtein দূরত্ব
   const m = a.length, n = b.length
   if (Math.abs(m - n) > 2) return 0
@@ -250,6 +254,12 @@ export function scoreMatch(query, item) {
   const qKey = phonKey(qRaw)
   if (qKey && qKey === phonKey(item.title)) score += 32
   else if (qKey && phonKey(item.title).includes(qKey) && qKey.length >= 6) score += 14
+
+  // ── ৩গ. 🚧 চাওয়া একটা শব্দও টাইটেলে না মিললে — এটা অন্য গান ──
+  //    সিলিং ১০০ → ১৩০ করার পর সব নম্বর বেড়ে গিয়েছিল, ফলে ৪৫-এর
+  //    সীমাটা আলগা হয়ে পড়েছিল: "believer" চাইলে "Believe Me" ৭৬ পেয়ে
+  //    পাশ করে যাচ্ছিল! বানানের মিল থাকলেই গান এক নয়।
+  if (inTitle === 0) score -= 25
 
   // ── ৪. টাইটেলে অনেক বাড়তি শব্দ = সম্ভবত অন্য গান ──
   const extra = Math.max(0, t.length - inTitle)

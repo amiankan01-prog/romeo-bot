@@ -26,19 +26,22 @@ const YTDLP = process.env.YTDLP_BIN || 'yt-dlp'
 //  আর Romeo "ডাউনলোড ব্যর্থ" দেখাতো — ফোনে গান না আসার আসল কারণ এটাই।
 //  তাই একাধিক জায়গা চেষ্টা করে, লিখতে পারা যায় কিনা পরীক্ষা করেই বেছে নিই।
 // ----------------------------------------------------------
-let _tmpRoot = null
-function tmpRoot() {
-  if (_tmpRoot) return _tmpRoot
-
-  const candidates = [
+/** অস্থায়ী ফাইল কোথায় কোথায় থাকতে পারে */
+function tmpCandidates() {
+  return [
     process.env.TMPDIR,
     process.env.PREFIX ? process.env.PREFIX + '/tmp' : null,
     os.tmpdir(),
     '/data/data/com.termux/files/usr/tmp',
     path.join(process.cwd(), 'data', 'tmp')
   ].filter(Boolean)
+}
 
-  for (const dir of candidates) {
+let _tmpRoot = null
+function tmpRoot() {
+  if (_tmpRoot) return _tmpRoot
+
+  for (const dir of tmpCandidates()) {
     try {
       if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true })
       // সত্যিই লেখা যায়? (শুধু থাকলেই হবে না — পারমিশনও লাগে)
@@ -211,9 +214,14 @@ async function saavnMirror(query) {
     const list = Array.isArray(d) ? d : []
     return list
       .filter(s => s?.media_url)
-      .map(s => ({
+      .map((s, idx) => ({
         title: s.song || '',
         artist: String(s.primary_artists || s.singers || '').split(',')[0] || '',
+        // 🎬 মূল API-র মতো এখানেও অ্যালবাম/সাল/র‍্যাঙ্ক — নইলে কভার-শনাক্তকরণ
+        //    অন্ধ হয়ে যেতো আর ব্যাকআপে পুরোনো ভুলটাই ফিরে আসতো
+        album: s.album || '',
+        year: Number(s.year || 0) || 0,
+        idx,
         duration: Number(s.duration || 0) || 0,
         direct: s.media_url, // এনক্রিপ্টেড নয় — সরাসরি ব্যবহার করা যাবে
         page: s.perma_url || ''
@@ -350,13 +358,26 @@ async function fromSaavn(query, cap) {
     const mirror = await saavnMirror(q)
     const mBest = bestMatch(query, mirror)
     if (mBest) {
-      note(`🎯 ব্যাকআপে মিল: "${mBest.item.title}" (${mBest.score}/100)`)
-      for (const mm of mBest.ranked.filter(r => r.score >= MIN_SCORE).slice(0, 3).map(r => r.item)) {
+      note(`🎯 ব্যাকআপে মিল: "${mBest.item.title}" (${mBest.score})`)
+      // 🐞 মূল পথে যে দুটো সারাই হয়েছে, ব্যাকআপেও সেগুলো দরকার —
+      //    নাহলে মূল API একবার ফেল করলেই পুরোনো ভুল ফিরে আসতো:
+      //    (ক) বাছা গানটাই প্রথমে নামাও, শুধু নম্বর ধরে নয়
+      //    (খ) কপি কিনা দেখে নাও
+      suspect = knockoffRisk(query, mBest.item, mirror)
+      if (suspect) note('🚩 ব্যাকআপেও সন্দেহজনক — YouTube দেখবো')
+      const mOrdered = [
+        mBest.item,
+        ...mBest.ranked
+          .filter(r => r.score >= MIN_SCORE && r.item !== mBest.item)
+          .slice(0, 2)
+          .map(r => r.item)
+      ]
+      for (const mm of mOrdered) {
         if (!fallback && (mm.page || mm.direct)) {
           fallback = { title: mm.title, artist: mm.artist, url: mm.page || mm.direct, source: 'JioSaavn (ব্যাকআপ)' }
         }
         const got = await grab(mm.direct, cap, { title: mm.title, artist: mm.artist, page: mm.page, source: 'JioSaavn (ব্যাকআপ)' })
-        if (got) return got
+        if (got) return { ...got, suspect }
       }
     } else if (mirror.length) {
       note('❌ ব্যাকআপেও মিল পেলাম না')
@@ -552,7 +573,14 @@ export async function fetchSong(query, maxBytes) {
     const y = await fromYtDlp(query, cap)
     if (y) {
       note(`${y.source}: ${y.file ? '✅ অডিও পেলাম' : '🔗 শুধু লিংক'}`)
-      if (y.file) return { ...y, log: [...LOG] }
+      if (y.file) {
+        // 🧹 JioSaavn-এর সন্দেহজনক কপিটা আর লাগবে না — ফোল্ডারটা মুছে দাও।
+        //    (এটা না করায় প্রতিটা "কপি-সন্দেহ" গানে একটা করে ১০ MB-র
+        //     ফোল্ডার ডিস্কে জমছিল। Render-এর ডিস্ক ছোট — কিছুদিনেই ভরে
+        //     গিয়ে Romeo বন্ধ হয়ে যেতো।)
+        if (saavnBackup) { cleanup(saavnBackup); saavnBackup = null }
+        return { ...y, log: [...LOG] }
+      }
       if (!link) link = y
     }
   } catch (e) {
@@ -590,6 +618,45 @@ export async function sendAudio(sock, jid, song) {
 }
 
 /** টেম্প ফাইল মুছে ফেলা */
+/**
+ * 🧹 পুরোনো অস্থায়ী ফোল্ডার ঝাড়ু দেওয়া।
+ *
+ * গান নামানোর সময় `romeo-song-xxxx` ফোল্ডার তৈরি হয়, আর yt-dlp নিজে
+ * `_MEIxxxx` ফোল্ডার বানায়। স্বাভাবিক অবস্থায় দুটোই মুছে যায় — কিন্তু
+ * প্রক্রিয়া হঠাৎ বন্ধ হলে, টাইমআউটে yt-dlp মারা পড়লে, বা কোনো বিরল
+ * পথে ফেরত গেলে ওগুলো পড়ে থাকে।
+ *
+ * পরীক্ষায় দেখা গেছে এভাবে **১১১টা ফোল্ডার জমে ডিস্ক ১০০% ভরে গিয়েছিল**।
+ * Render-এর ফ্রি প্ল্যানে ডিস্ক ছোট — ভরে গেলে Romeo একেবারে বন্ধ।
+ *
+ * তাই চালু হওয়ার সময় আর প্রতি আধঘণ্টায় একবার পুরোনোগুলো মুছে ফেলি।
+ *
+ * @param {number} olderThanMs  এর চেয়ে পুরোনো হলে মুছবে (ডিফল্ট ২০ মিনিট)
+ * @returns {number} কতগুলো মোছা হলো
+ */
+export function sweepTemp(olderThanMs = 20 * 60 * 1000) {
+  const cutoff = Date.now() - olderThanMs
+  let n = 0
+  // ⚠️ শুধু *বর্তমান* টেম্প ফোল্ডার দেখলে হবে না। ডিস্ক ভরে গেলে
+  //    tmpRoot() লেখার পরীক্ষায় ফেল করে অন্য ফোল্ডারে সরে যায় — অথচ
+  //    আসল আবর্জনা পড়ে থাকে আগেরটায়। তাই সবগুলোই ঝাড়ি।
+  for (const root of new Set(tmpCandidates())) {
+    try {
+      for (const name of fs.readdirSync(root)) {
+        if (!/^(romeo-song-|_MEI)/.test(name)) continue
+        const full = path.join(root, name)
+        try {
+          if (fs.statSync(full).mtimeMs > cutoff) continue // এখনো ব্যবহার হতে পারে
+          fs.rmSync(full, { recursive: true, force: true })
+          n++
+        } catch { /* অন্য কেউ ব্যবহার করছে — থাক */ }
+      }
+    } catch { /* এই ফোল্ডারটা নেই বা পড়া গেলো না */ }
+  }
+  if (n) console.error(`🧹 ${n}টা পুরোনো অস্থায়ী ফোল্ডার মুছলাম`)
+  return n
+}
+
 export function cleanup(song) {
   if (!song?.dir) return
   try {
