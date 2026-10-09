@@ -122,6 +122,10 @@ export function buildConfig() {
     // এক গানের সর্বোচ্চ সাইজ (MB) — এর বেশি হলে ডাউনলোড না পাঠিয়ে শুধু লিংক
     songMaxBytes: Math.min(20, Math.max(2, num(process.env.SONG_MAX_MB, 16))) * 1024 * 1024,
     // গান না এলে কী কী চেষ্টা করলো সেটা গ্রুপেই দেখাবে (খোঁজার জন্য)
+    // 🎙️ ভয়েস নোট — দিনে সর্বোচ্চ কতবার Romeo গলায় বলবে।
+    //    ⚠️ এটা শুধু *চাইলে* ব্যবহার হয় (`!ভয়েস on` বা "ভয়েসে বল"),
+    //    তাই সীমাটা উদার রাখা যায়। স্প্যাম ঠেকাতে একটা ছাদ দরকার।
+    voiceDailyCap: Math.min(1000, Math.max(1, num(process.env.VOICE_DAILY_CAP, 200))),
     songDebug: bool(process.env.SONG_DEBUG, false),
     debug: bool(process.env.DEBUG, false),
 

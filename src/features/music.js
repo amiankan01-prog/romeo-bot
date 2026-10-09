@@ -464,9 +464,21 @@ async function ytSearch(query, prefix) {
 
     if (!cands.length) return null
 
-    // মিল যথেষ্ট হলে সেরাটা, নাহলে প্রথমটা (YouTube-এর নিজের র‍্যাংকিং ভালো)
-    const best = bestMatch(query, cands, 35)
-    return best ? best.item : cands[0]
+    // 🎯 মিল যথেষ্ট হলে তবেই নেবো।
+    //
+    //    আগে সীমা ছিল ৩৫, আর মিল না পেলেও **প্রথমটা ধরে নিতো** —
+    //    দুটোই বিপজ্জনক। পরীক্ষায় "projecti" (projapoti-র বানান ভুল)
+    //    লিখলে "Projection" নামে সম্পূর্ণ অন্য একটা গান চলে আসতো।
+    //
+    //    মাপজোক বলছে সীমারেখা পরিষ্কার:
+    //      ভুল গান  → ৪২
+    //      সঠিক গান → ৮৬ থেকে ১৩০
+    //    তাই ৫৫-তে কাটলে ভুলটা আটকায়, সঠিকগুলোর গায়ে লাগে না।
+    //
+    //    আর মিল না পেলে চুপ করে ভুল গান পাঠানোর চেয়ে কিছু না পাঠানোই
+    //    ভালো — Romeo তখন জিজ্ঞেস করবে "কোন গানটা?"
+    const best = bestMatch(query, cands, 55)
+    return best ? best.item : null
   } catch {
     return null
   }

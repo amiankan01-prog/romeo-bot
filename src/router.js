@@ -11,6 +11,7 @@ import { createBrain } from './ai/brain.js'
 import { detectMood } from './ai/mood.js'
 import { Memory } from './ai/memory.js'
 import { createProfiles } from './ai/profile.js'
+import { speak, sendVoice, dropVoice } from './ai/voice.js'
 import { getMedia, mediaKind } from './media.js'
 import { fetchSong, sendAudio, cleanup } from './features/music.js'
 import { fetchLyrics, formatLyrics } from './features/lyrics.js'
@@ -469,6 +470,23 @@ function songQuery(text) {
   return words.slice(a, b).join(' ').trim()
 }
 
+/**
+ * 🎙️ কেউ কি Romeo-কে *গলায়* বলতে বলছে?
+ *
+ * "voice e bol", "ভয়েসে বল", "বলে শোনা", "মুখে বল" — সব ধরনই ধরি,
+ * কারণ মানুষ এক কথা দশ রকমে লেখে।
+ */
+const VOICE_ASK = t => {
+  const x = String(t || '').toLowerCase()
+  return (
+    /(voice|ভয়েস|ভইস|vois)\s*(e|ে|te|তে|mode|মোড)?\s*(bol|বল|de|দে|shona|শোনা|sona|kotha|কথা)/i.test(x) ||
+    /(bol|বল)\s*(e|ে)?\s*(shona|শোনা|sona|shunao|শোনাও)/i.test(x) ||
+    /(mukhe|মুখে|golay|গলায়|gola|গলা)\s*(bol|বল|shona|শোনা)/i.test(x) ||
+    /(audio|অডিও)\s*(e|ে|te|তে)?\s*(bol|বল|dao|দাও|de|দে)/i.test(x) ||
+    /\b(voice note|ভয়েস নোট)\b/i.test(x)
+  )
+}
+
 /** প্রশ্ন কিনা — "তুই কী বলিস?" / "কাল যাবি?" → Romeo-র জন্যই হতে পারে */
 const isQuestion = t =>
   /[?？]/.test(t) ||
@@ -491,6 +509,13 @@ export function createRouter(cfg, db) {
   profiles.init().catch(e => console.error('⚠️  স্মৃতি চালু হয়নি:', e?.message || e))
   // কার সাথে কতগুলো কথা হলো — প্রতি কয়েকটায় একবার নতুন তথ্য শিখি
   const sinceLearn = new Map()
+
+  // 🎙️ ভয়েস মোড — Romeo কখন নিজের গলায় কথা বলবে
+  //    ⚠️ সবসময় নয়! প্রতিটা কথায় ভয়েস নোট এলে গ্রুপে সবাই বিরক্ত হবে।
+  //    শুধু (ক) কেউ স্পষ্ট করে চাইলে, বা (খ) `!ভয়েস on` করা থাকলে।
+  const voiceUntil = new Map()   // chatId => কখন পর্যন্ত ভয়েস মোড চালু
+  const voiceOnce = new Set()    // "chat:user" => পরের উত্তরটা ভয়েসে
+  const VOICE_MODE_MS = 10 * 60 * 1000
 
   const sentIds = new Set()
   const sentQueue = []
@@ -814,10 +839,64 @@ export function createRouter(cfg, db) {
   }
 
   /** AI দিয়ে উত্তর — null এলে কিছু পাঠাবে না */
+  /** এই মুহূর্তে Romeo-র ভয়েসে বলা উচিত? */
+  function wantsVoice(jid, user) {
+    if (voiceOnce.has(`${jid}:${user}`)) return true
+    const until = voiceUntil.get(jid)
+    if (until && until > Date.now()) return true
+    if (until) voiceUntil.delete(jid)
+    return false
+  }
+
+  /**
+   * 🎙️ উত্তরটা পাঠাও — দরকার হলে Romeo-র গলায়।
+   *
+   * ভয়েস বানাতে না পারলে (নেট/সার্ভার সমস্যা) চুপ করে থাকবে না —
+   * লেখাতেই পাঠিয়ে দেবে। ব্যবহারকারী কখনো খালি হাতে ফিরবে না।
+   */
+  async function sayOut(sock, msg, text) {
+    const jid = msg.key.remoteJid
+    const user = senderNumber(msg)
+    if (!text) return
+
+    if (!wantsVoice(jid, user)) return reply(sock, msg, text)
+
+    voiceOnce.delete(`${jid}:${user}`) // একবারের অনুরোধ শেষ
+
+    const today = 'voice:' + new Date().toDateString()
+    if ((db.get(today, 0) || 0) >= cfg.voiceDailyCap) {
+      return reply(sock, msg, text) // সীমা ছাড়ালে চুপচাপ লেখাতেই
+    }
+
+    let v = null
+    try {
+      if (cfg.typing) await sock.sendPresenceUpdate('recording', jid).catch(() => {})
+      v = await speak(text)
+      if (!v) return reply(sock, msg, text)
+      const outMsg = await sendVoice(sock, jid, v, msg)
+      if (!outMsg) return reply(sock, msg, text)
+
+      // 🐞 এই দুটো লাইন না থাকায় একটা চুপচাপ বাগ ছিল: ভয়েসে উত্তর দিলে
+      //    Romeo নিজেই "ভুলে যেতো" যে সে কথা বলেছে। ফলে পরের কথায়
+      //    আড্ডা-নিয়ম ভেবে চুপ করে যেতো, আর তার ভয়েস নোটে কেউ রিপ্লাই
+      //    দিলে সেটাও চিনতে পারতো না।
+      markSent(outMsg?.key?.id)
+      lastSpeaker.set(jid, 'ME')
+
+      db.bump(today)
+      db.bump('stats:replies')
+    } catch (e) {
+      console.error('🎙️ ভয়েস ব্যর্থ:', e?.message || e)
+      return reply(sock, msg, text)
+    } finally {
+      dropVoice(v) // অস্থায়ী ফাইল সাথে সাথে মুছে দাও
+    }
+  }
+
   async function aiSay(sock, msg, prompt, opts = {}) {
     const out = await aiReply(sock, msg, prompt, opts)
     if (out == null) return
-    return reply(sock, msg, out)
+    return sayOut(sock, msg, out)
   }
 
   /**
@@ -1205,6 +1284,50 @@ export function createRouter(cfg, db) {
       )
     }
 
+    // ---------- 🎙️ ভয়েস মোড ----------
+    if (matchCommand(text, ['ভয়েস', 'voice', 'vois', 'ভইস'])) {
+      const arg = text.replace(/^[!\/]\S+\s*/, '').trim().toLowerCase()
+      const on = /^(on|চালু|চালো|start|hae|হ্যাঁ)$/.test(arg)
+      const off = /^(off|বন্ধ|bondho|stop|na|না)$/.test(arg)
+
+      if (off) {
+        voiceUntil.delete(jid)
+        return reply(sock, msg, '_ঠিক আছে, আবার লিখেই বলবো_ ✍️')
+      }
+      if (on || !arg) {
+        voiceUntil.set(jid, Date.now() + VOICE_MODE_MS)
+        return reply(sock, msg,
+          '🎙️ *ভয়েস মোড চালু* — এবার থেকে গলায় বলবো।\n_১০ মিনিট চলবে, থামাতে_ `!ভয়েস off`')
+      }
+      return reply(sock, msg, '`!ভয়েস on` _বা_ `!ভয়েস off` 🎙️')
+    }
+
+    // ---------- 🗣️ "!বলো <কথা>" — যা লিখবে, Romeo সেটাই বলবে ----------
+    if (matchCommand(text, ['বলো', 'বল', 'bolo', 'say', 'speak'])) {
+      const what = text.replace(/^[!\/]\S+\s*/, '').trim()
+      if (!what) return reply(sock, msg, '_কী বলবো?_ যেমন — `!বলো শুভ সকাল বন্ধুরা` 🎙️')
+
+      const today = 'voice:' + new Date().toDateString()
+      if ((db.get(today, 0) || 0) >= cfg.voiceDailyCap) {
+        return reply(sock, msg, '_মামার গলা আজ অনেক খেটেছে, কাল আবার_ 🎙️😴')
+      }
+
+      let v = null
+      try {
+        if (cfg.typing) await sock.sendPresenceUpdate('recording', jid).catch(() => {})
+        v = await speak(what)
+        if (!v) return reply(sock, msg, '_গলাটা ঠিক বেরোলো না, আরেকবার চেষ্টা কর_ 🎙️')
+        const outMsg = await sendVoice(sock, jid, v, msg)
+        if (!outMsg) return reply(sock, msg, '_ভয়েসটা পাঠাতে পারলাম না_ 😕')
+        markSent(outMsg?.key?.id)
+        lastSpeaker.set(jid, 'ME')
+        db.bump(today)
+      } finally {
+        dropVoice(v)
+      }
+      return
+    }
+
     if (matchCommand(text, ['ভুলে যা', 'forget'])) {
       memory.clear(jid)
       const n = profiles.forgetChat(jid) // স্থায়ী স্মৃতিও মুছে যাক
@@ -1273,10 +1396,17 @@ export function createRouter(cfg, db) {
         if (out) {
           if (mentioned) startConversation(jid, user)
           else touchConversation(jid, user)
-          return reply(sock, msg, out)
+          return sayOut(sock, msg, out)
         }
       }
       return
+    }
+
+    // ---------- 🎙️ "ভয়েসে বল" — পরের উত্তরটা গলায় ----------
+    //    Romeo-র সাথে কথা চলছে বা তাকে ডাকা হয়েছে, এমন অবস্থাতেই শুধু।
+    //    (নাহলে দুই বন্ধু নিজেদের মধ্যে "ভয়েসে বল" বললেও সে ঢুকে পড়তো)
+    if ((mentioned || inConvo) && !talkingToOther && VOICE_ASK(text)) {
+      voiceOnce.add(`${jid}:${user}`)
     }
 
     // ---------- ৬. Romeo-কে ডাকা → কথা শুরু ----------
@@ -1285,12 +1415,12 @@ export function createRouter(cfg, db) {
       const clean = text.replace(/@\d+/g, '').trim()
       if (brain.enabled() && hasSubstance(text, cfg.triggerWords)) {
         const out = await aiReply(sock, msg, clean)
-        if (out) return reply(sock, msg, out)
+        if (out) return sayOut(sock, msg, out)
       }
       // ⚠️ AI না থাকলে/ব্যর্থ হলে আগে সবসময় "হাজির! কী খবর?" যেতো —
       //    কেউ "মন খারাপ" লিখলেও! এখন আগে মুড দেখি।
       const feel = fun.moodLine(detectMood(clean).mood)
-      return reply(sock, msg, feel || pickFresh(fun.WAKE_LINES, 'wake'))
+      return sayOut(sock, msg, feel || pickFresh(fun.WAKE_LINES, 'wake'))
     }
 
     // ---------- ৬.৫ কথা চলছে → নাম ছাড়াই উত্তর ----------
