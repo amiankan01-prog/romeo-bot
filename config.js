@@ -69,6 +69,11 @@ export function buildConfig() {
     mongoUri: (process.env.MONGODB_URI || '').trim(),
     mongoDb: (process.env.MONGODB_DB || 'romeo').trim(),
     sessionId: (process.env.SESSION_ID || 'default').trim(),
+    // 🔁 নাম্বার বদলালে / নতুন করে পেয়ার করতে চাইলে একবার FRESH_LOGIN=true দাও।
+    //    চালু হওয়ার সাথে সাথেই পুরোনো WhatsApp লগইন (MongoDB + ফোল্ডার) মুছে
+    //    যাবে আর নতুন BOT_NUMBER-এর জন্য পেয়ারিং কোড দেখাবে।
+    //    ⚠️ কাজ শেষ হলে আবার false করে দিও — নাহলে প্রতিবার রিস্টার্টেই লগআউট হবে।
+    freshLogin: bool(process.env.FRESH_LOGIN, false),
     // Render ইত্যাদি ক্লাউডে একটা পোর্ট খুলে রাখতে হয়, নাহলে সার্ভার
     // ভাবে অ্যাপ চালু হয়নি আর বন্ধ করে দেয়।
     port: num(process.env.PORT, 0),
@@ -78,12 +83,14 @@ export function buildConfig() {
     // --- 💬 ব্যক্তিগত চ্যাট (DM) ---
     // true  = কেউ Romeo-কে (তোমার নাম্বারে) ইনবক্সে মেসেজ দিলেও সে জবাব দেবে
     //         গান/লিরিক্স/AI — সব কাজ করবে, যেমন গ্রুপে করে
-    // false = শুধু গ্রুপে (আগের মতো)
+    // false = 🚫 ইনবক্স একদম বন্ধ — Romeo শুধু গ্রুপে কথা বলবে।
+    //         কেউ প্রাইভেটে কিছু লিখলে সে দেখবেও না, জবাবও দেবে না।
     allowDm: bool(process.env.ALLOW_DM, false),
-    // DM-এ কেউ মেসেজ দিলে Romeo কি সাথে সাথি জবাব দেবে?
+    // DM চালু থাকলে: কেউ মেসেজ দিলে Romeo কি সাথে সাথি জবাব দেবে?
     // true  = সব ইনকামিং মেসেজে জবাব (যেমন কেউ তোমাকে মেসেজ দিলে Romeo রিপ্লাই দেবে)
     // false = শুধু কমান্ডে (!গান, !লিরিক্স) বা "Romeo" ডাকলে জবাব
-    dmAutoReply: bool(process.env.DM_AUTO_REPLY, true),
+    // ⚠️ ALLOW_DM=false হলে এই লাইনটার কোনো মানেই নেই (DM-ই বন্ধ)
+    dmAutoReply: bool(process.env.DM_AUTO_REPLY, false),
 
     // --- রেট লিমিট ---
     cooldownMs: num(process.env.COOLDOWN_MS, 2500),

@@ -22,9 +22,9 @@ services:
       - key: ALLOW_ALL_GROUPS
         value: "true"
       - key: ALLOW_DM
-        value: "true"
+        value: "false"        # 🚫 ইনবক্স বন্ধ — শুধু গ্রুপে
       - key: DM_AUTO_REPLY
-        value: "true"
+        value: "false"
       - key: SONG_DAILY_CAP
         value: "50"
       - key: CONVO_TIMEOUT_MIN

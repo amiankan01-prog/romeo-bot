@@ -4,7 +4,7 @@
 // ==========================================================
 import fs from 'node:fs'
 import { buildConfig } from './config.js'
-import { startBot } from './src/connection.js'
+import { startBot, pairState } from './src/connection.js'
 import { createRouter } from './src/router.js'
 import * as db from './src/store/db.js'
 import { pick } from './src/utils.js'
@@ -60,7 +60,11 @@ async function main() {
     connected,
     groups: cfg.allowAllGroups ? 'all' : cfg.allowedGroups.length,
     replies: db.get('stats:replies', 0),
-    songs: db.get('song:' + new Date().toDateString(), 0)
+    songs: db.get('song:' + new Date().toDateString(), 0),
+    // 📟 পেয়ারিং কোড — ফোনের ব্রাউজারে /pair খুললে দেখা যাবে
+    pairCode: pairState.code,
+    pairNumber: pairState.number,
+    pairAt: pairState.at
   }))
 
   const tips = [

@@ -10,8 +10,13 @@ export class Memory {
     this.store = new Map() // chatId -> { items: [], touched: ts }
   }
 
-  /** গ্রুপের কথা মনে রাখা */
-  add(chatId, { name, text, fromMe = false }) {
+  /**
+   * গ্রুপের কথা মনে রাখা।
+   * 🐞 `who` (যে বললো তার নাম্বার) রাখাটা জরুরি — নাহলে শেখার সময়
+   *    পুরো গ্রুপের কথা থেকে তথ্য তুলে *একজনের* ঘাড়ে চাপানো হয়,
+   *    আর Romeo পরে একজনের কথা আরেকজনকে বলে বেড়ায়।
+   */
+  add(chatId, { name, text, fromMe = false, who = '' }) {
     if (!text) return
     let entry = this.store.get(chatId)
     if (!entry) {
@@ -21,6 +26,7 @@ export class Memory {
     entry.touched = Date.now()
     entry.items.push({
       role: fromMe ? 'me' : 'user',
+      who: fromMe ? '' : String(who || ''),
       text: fromMe ? `Romeo: ${text}` : `${name || 'বন্ধু'}: ${text}`
     })
     if (entry.items.length > this.max) entry.items.shift()
@@ -37,6 +43,17 @@ export class Memory {
   get(chatId) {
     const entry = this.store.get(chatId)
     return entry ? [...entry.items] : []
+  }
+
+  /**
+   * 🎯 শুধু *একজন নির্দিষ্ট মানুষের* নিজের লাইনগুলো।
+   * শেখার সময় এটাই দরকার — অন্য কারও কথা যেন ওর খাতায় না ঢোকে।
+   */
+  getFrom(chatId, who) {
+    if (!who) return []
+    const entry = this.store.get(chatId)
+    if (!entry) return []
+    return entry.items.filter(h => h.who === String(who))
   }
 
   clear(chatId) {

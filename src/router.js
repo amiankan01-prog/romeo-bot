@@ -520,6 +520,21 @@ export function createRouter(cfg, db) {
   const sentIds = new Set()
   const sentQueue = []
 
+  // 🔁 একই মেসেজ দুবার এলে দুবার জবাব দেওয়া বন্ধ।
+  //    Baileys মাঝে মাঝে একই মেসেজ দুবার পাঠায় (রিকানেক্ট, হিস্ট্রি-সিঙ্ক,
+  //    নেট কাঁপলে) — তখন Romeo একই কথার দুটো উত্তর দিয়ে বসতো,
+  //    মনে হতো সে কথাটা "দুবার শুনেছে"। এখন মেসেজ-আইডি ধরে রাখি।
+  const seenMsgIds = new Set()
+  const seenMsgQueue = []
+  function markSeen(key) {
+    if (!key) return false
+    if (seenMsgIds.has(key)) return true   // আগেই দেখা — বাদ
+    seenMsgIds.add(key)
+    seenMsgQueue.push(key)
+    if (seenMsgQueue.length > 500) seenMsgIds.delete(seenMsgQueue.shift())
+    return false
+  }
+
   // মিডিয়া সাময়িকভাবে মনে রাখা — "!দেখো" দিয়ে রিপ্লাই দিলে কাজ লাগে
   const mediaCache = new Map()
   const lastChime = new Map()
@@ -755,7 +770,13 @@ export function createRouter(cfg, db) {
     ;(async () => {
       try {
         const name = pushName || profiles.get(jid, user)?.name || ''
-        const facts = await brain.learn({ history: memory.get(jid), name })
+        // 🐞 আগে পুরো গ্রুপের আড্ডা দেওয়া হতো, অথচ তথ্য জমা হতো *একজনের*
+        //    নামে। ফলে সুমিতের "আমি ঢাকায় থাকি" রাহুলের খাতায় উঠে যেতো,
+        //    আর Romeo পরে রাহুলকে বলতো "তুই তো ঢাকায় থাকিস" — পুরো গুলিয়ে
+        //    যেতো। এখন শুধু ওর নিজের লাইন থেকেই শিখবে।
+        const ownLines = memory.getFrom(jid, user)
+        if (ownLines.length < 2) return
+        const facts = await brain.learn({ history: ownLines, name })
         if (facts.length) {
           const added = profiles.learn(jid, user, facts)
           if (added) console.error(`🧠 ${name || user}: ${added}টা নতুন কথা মনে রাখলাম`)
@@ -1024,6 +1045,8 @@ export function createRouter(cfg, db) {
     const jid = msg.key.remoteJid
     // 💬 ব্যক্তিগত চ্যাট (1-to-1) — আগে একেবারেই বাদ দেওয়া হতো
     const isDm = !isGroupJid(jid)
+    // 🔁 একই মেসেজ আবার এলে এখানেই আটকে যাবে (জিদ + আইডি মিলিয়ে)
+    if (markSeen(`${jid}:${msg.key.id || ''}`)) return
     if (msg.key.fromMe && sentIds.has(msg.key.id)) return
 
     // ⚠️ DM-এ তুমি নিজে ফোন থেকে যা লিখছো (fromMe) — সেখানে Romeo জবাব দেবে না,
@@ -1057,8 +1080,10 @@ export function createRouter(cfg, db) {
     // ⚠️ `/id` আগে থেকেই চেক করি — নাহলে নতুন গ্রুপে Romeo-কে ঢুকানোর
     //    উপায় থাকে না (কোন গ্রুপে আছি সেটা জানতেই হলে `/id` লাগবে)।
     //    অনুমোদিত নয় → শুধু /id-এর জবাব, আর কিছু নয়।
+    // 🚫 ইনবক্স বন্ধ (ALLOW_DM=false) হলে Romeo ব্যক্তিগত চ্যাটে একদম চুপ —
+    //    না জবাব, না কমান্ড, কিছুই না। শুধু গ্রুপে কাজ করবে।
     if (!isAllowedChat(jid, cfg)) {
-      if (matchCommand(text, ['id'])) {
+      if (!isDm && matchCommand(text, ['id'])) {
         await reply(sock, msg, fun.newGroupText(jid))
       }
       return
@@ -1070,8 +1095,9 @@ export function createRouter(cfg, db) {
     // স্মৃতিতে রাখি (ছবি/ভয়েস হলে বর্ণনা দিয়ে)
     // 🧠 কে কথা বলছে — চিনে রাখি (নাম + কতবার দেখা হলো)
     profiles.touch(jid, senderNumber(msg), msg.pushName || name)
-    if (text) memory.add(jid, { name, text })
-    else if (kind) memory.add(jid, { name, text: `[একটা ${kind === 'voice' ? 'ভয়েস নোট' : 'ছবি'} পাঠালো]` })
+    const whoNum = senderNumber(msg)
+    if (text) memory.add(jid, { name, text, who: whoNum })
+    else if (kind) memory.add(jid, { name, who: whoNum, text: `[একটা ${kind === 'voice' ? 'ভয়েস নোট' : 'ছবি'} পাঠালো]` })
 
     // ---------- ৩. Discovery mode ----------
     if (cfg.discoveryMode) {
@@ -1486,20 +1512,54 @@ export function createRouter(cfg, db) {
     await reply(sock, msg, line)
   }
 
-  /** গ্রুপে কেউ জয়েন করলে — স্বাগতম */
+  // 🔁 WhatsApp একই গ্রুপ-ইভেন্ট মাঝে মাঝে দুবার পাঠায় — তখন দুটো
+  //    স্বাগতম চলে যেতো। ৬০ সেকেন্ডের জন্য একই ইভেন্ট মনে রাখি।
+  const seenEvents = new Map()
+
+  /** 👋 গ্রুপে কেউ এলে স্বাগতম, কেউ চলে গেলে বিদায় */
   async function handleGroupEvent(sock, ev) {
     if (cfg.discoveryMode) return
     if (!isAllowedChat(ev.id, cfg)) return
-    if (ev.action !== 'add') return
+    if (ev.action !== 'add' && ev.action !== 'remove') return
 
-    const me = sock.user?.id ? sock.user.id.split(':')[0] + '@s.whatsapp.net' : null
-    const people = ev.participants.filter(p => p !== me && p !== sock.user?.id)
-    if (!people.length) return
+    const parts = ev.participants || []
+    if (!parts.length) return
+
+    // ডুপ্লিকেট ইভেন্ট আটকাও
+    const evKey = `${ev.id}:${ev.action}:${parts.join(',')}`
+    const now = Date.now()
+    if ((seenEvents.get(evKey) || 0) > now - 60000) return
+    seenEvents.set(evKey, now)
+    if (seenEvents.size > 400) {
+      for (const [k, t] of seenEvents) if (now - t > 60000) seenEvents.delete(k)
+    }
+
+    const meNum = sock.user?.id ? sock.user.id.split('@')[0].split(':')[0] : null
+    // 🐞 আগে '@' + p.split('@')[0] করা হতো — জিদ-এ ডিভিস-নম্বর থাকলে
+    //    (91xxxx:12@...) মেনশনটা ভেঙে যেতো। আর `mentions`-এও ওই ভাঙা জিদই
+    //    যেতো, ফলে WhatsApp লেখার '@91xxxx'-এর সাথে মেলাতে পারতো না আর
+    //    নামটা নীল হয়ে ফুটতো না। এখন দুই জায়গাতেই ':'-এর পরেরটা বাদ।
+    const people = [...new Set(
+      parts
+        .map(p => String(p).split('@')[0].split(':')[0])
+        .filter(num => num && num !== meNum)
+        .map(num => num + '@s.whatsapp.net')
+    )]
+    if (!people.length) return   // Romeo নিজেই ঢুকেছে/বেরিয়েছে → চুপ
 
     const who = people.map(p => '@' + p.split('@')[0]).join(' ')
+    const isJoin = ev.action === 'add'
+    const line = isJoin
+      ? pickFresh(fun.WELCOMES, 'welcome')
+      : pickFresh(fun.FAREWELLS, 'farewell')
+
     try {
-      const sent = await sock.sendMessage(ev.id, { text: pickFresh(fun.WELCOMES, 'welcome').replace('${who}', who), mentions: people })
+      const sent = await sock.sendMessage(ev.id, {
+        text: String(line || '').replace(/\$\{who\}/g, who),
+        mentions: people
+      })
       markSent(sent?.key?.id)
+      if (isJoin) memory.addOwn(ev.id, String(line || '').replace(/\$\{who\}/g, who))
     } catch {
       /* অনুমতি না থাকলে চুপ */
     }

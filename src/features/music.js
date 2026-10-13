@@ -356,7 +356,14 @@ async function fromSaavn(query, cap) {
   // --- রাস্তা ২: ব্যাকআপ API (এখানেও মিল যাচাই করি) ---
   try {
     const mirror = await saavnMirror(q)
-    const mBest = bestMatch(query, mirror)
+    // 🐞 ব্যাকআপের মাপকাঠি মূল পথের চেয়েও ঢিলে ছিল (৪৫)। ফলে মূল API যখন
+    //    "projecti"-র জন্য "Projection"-কে ৪২ নম্বরে *বাতিল* করতো, তখন
+    //    ব্যাকআপ ওই একই ভুল গানকে "Projections" নামে ৫২ নম্বর দিয়ে *পাঠিয়ে*
+    //    দিতো। ব্যাকআপে অ্যালবাম/বছরের তথ্যও কম থাকে, তাই এখানে মাপকাঠি
+    //    কড়া হওয়া উচিত — YouTube-এর পথ আগে থেকেই ৫৫ ব্যবহার করে।
+    //    মাপা নম্বর: আসল গান ১২৩–১৩০, ভুল গান ৫২ — তাই ৫৫ নিরাপদ সীমা।
+    const BACKUP_MIN_SCORE = 55
+    const mBest = bestMatch(query, mirror, BACKUP_MIN_SCORE)
     if (mBest) {
       note(`🎯 ব্যাকআপে মিল: "${mBest.item.title}" (${mBest.score})`)
       // 🐞 মূল পথে যে দুটো সারাই হয়েছে, ব্যাকআপেও সেগুলো দরকার —
@@ -368,7 +375,7 @@ async function fromSaavn(query, cap) {
       const mOrdered = [
         mBest.item,
         ...mBest.ranked
-          .filter(r => r.score >= MIN_SCORE && r.item !== mBest.item)
+          .filter(r => r.score >= BACKUP_MIN_SCORE && r.item !== mBest.item)
           .slice(0, 2)
           .map(r => r.item)
       ]
